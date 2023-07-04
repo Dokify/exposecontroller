@@ -16,8 +16,9 @@ import (
 	"github.com/jenkins-x/exposecontroller/controller"
 	"github.com/jenkins-x/exposecontroller/version"
 	"github.com/spf13/pflag"
-	"k8s.io/kubernetes/pkg/api"
-	kubectlutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
+	api "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 const (
@@ -52,7 +53,21 @@ var (
 )
 
 func main() {
-	factory := kubectlutil.NewFactory(nil)
+	kubeConfigFlags := genericclioptions.NewConfigFlags(true)
+	matchVersionKubeConfigFlags := clientcmd.NewDefaultPathOptions()
+
+	// Asegúrate de que las funciones "ToFile` y "ToRawKubeConfigLoader" obtengan los valores esperados.
+
+	// Convierte los flags a las opciones de Config.
+	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		kubeConfigFlags.ToRawKubeConfigLoader(),
+		&clientcmd.ConfigOverrides{
+			CurrentContext: contextStringVariable,
+			ClusterInfo:    clientcmdapi.Cluster{Server: ""},
+		},
+	)
+
+	factory := genericclioptions.NewConfigFlags(true)
 	factory.BindFlags(flags)
 	factory.BindExternalFlags(flags)
 	flags.Parse(os.Args)
