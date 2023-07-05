@@ -6,11 +6,9 @@ import (
 	"github.com/golang/glog"
 	"github.com/pkg/errors"
 
-	oclient "github.com/openshift/origin/pkg/client"
-	api "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	client "k8s.io/client-go/kubernetes"
 	restclient "k8s.io/client-go/rest"
-	"k8s.io/kubernetes/pkg/runtime"
 )
 
 type ExposeStrategy interface {

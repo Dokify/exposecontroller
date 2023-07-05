@@ -3,15 +3,15 @@ package exposestrategy
 import (
 	"bytes"
 	"fmt"
+	"gopkg.in/yaml.v2"
 	"strconv"
 	"strings"
 
 	"github.com/golang/glog"
 	"github.com/pkg/errors"
-	"gopkg.in/v2/yaml"
 	"k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	client "k8s.io/client-go/kubernetes"
-	"k8s.io/kubernetes/pkg/runtime"
 )
 
 // const (
