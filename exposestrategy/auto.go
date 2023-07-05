@@ -7,10 +7,9 @@ import (
 	"github.com/pkg/errors"
 	api "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	client "k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/pkg/api/unversioned"
 	restclient "k8s.io/client-go/rest"
-	"k8s.io/kubernetes/pkg/runtime"
 )
 
 const (
@@ -88,7 +87,7 @@ func getAutoDefaultDomain(c *client.Client) (string, error) {
 	}
 
 	// check for a gofabric8 ingress labelled node
-	selector, err := unversioned.LabelSelectorAsSelector(&unversioned.LabelSelector{MatchLabels: map[string]string{"fabric8.io/externalIP": "true"}})
+	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{"fabric8.io/externalIP": "true"}})
 	nodes, err = c.Nodes().List(metav1.ListOption{LabelSelector: selector})
 	if len(nodes.Items) == 1 {
 		node := nodes.Items[0]

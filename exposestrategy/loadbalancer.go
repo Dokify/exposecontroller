@@ -9,7 +9,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	client "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/kubernetes/pkg/runtime"
+
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 type LoadBalancerStrategy struct {

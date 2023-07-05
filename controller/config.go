@@ -2,12 +2,12 @@ package controller
 
 import (
 	"fmt"
+	"gopkg.in/yaml.v2"
 	"io/ioutil"
 	"os"
 
 	"github.com/golang/glog"
 	"github.com/pkg/errors"
-	"gopkg.in/v2/yaml"
 )
 
 func LoadFile(path string) (*Config, bool, error) {
