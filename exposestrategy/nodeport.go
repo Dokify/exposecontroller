@@ -8,9 +8,12 @@ import (
 
 	"github.com/pkg/errors"
 
-	"k8s.io/kubernetes/pkg/api"
+	api "k8s.io/api/core/v1
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	client "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/kubernetes/pkg/api/v1"
-	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/runtime"
 )
 
@@ -28,7 +31,7 @@ const ExternalIPLabel = "fabric8.io/externalIP"
 func NewNodePortStrategy(client *client.Client, encoder runtime.Encoder, nodeIP string) (*NodePortStrategy, error) {
 	ip := nodeIP
 	if len(ip) == 0 {
-		l, err := client.Nodes().List(api.ListOptions{})
+		l, err := client.Nodes().List(metav1.ListOptions{})
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to list nodes")
 		}
@@ -78,7 +81,7 @@ func getNodeHostIP(node api.Node) (net.IP, error) {
 }
 
 func (s *NodePortStrategy) Add(svc *api.Service) error {
-	cloned, err := api.Scheme.DeepCopy(svc)
+	cloned, err := scheme.Scheme.DeepCopy(svc)
 	if err != nil {
 		return errors.Wrap(err, "failed to clone service")
 	}
@@ -119,7 +122,7 @@ func (s *NodePortStrategy) Add(svc *api.Service) error {
 		return errors.Wrap(err, "failed to create patch")
 	}
 	if patch != nil {
-		err = s.client.Patch(api.StrategicMergePatchType).
+		err = s.client.Patch(strategicpatch.StrategicMergePatchType).
 			Resource("services").
 			Namespace(svc.Namespace).
 			Name(svc.Name).
@@ -133,7 +136,7 @@ func (s *NodePortStrategy) Add(svc *api.Service) error {
 }
 
 func (s *NodePortStrategy) Remove(svc *api.Service) error {
-	cloned, err := api.Scheme.DeepCopy(svc)
+	cloned, err := scheme.Scheme.DeepCopy(svc)
 	if err != nil {
 		return errors.Wrap(err, "failed to clone service")
 	}
@@ -149,7 +152,7 @@ func (s *NodePortStrategy) Remove(svc *api.Service) error {
 		return errors.Wrap(err, "failed to create patch")
 	}
 	if patch != nil {
-		err = s.client.Patch(api.StrategicMergePatchType).
+		err = s.client.Patch(strategicpatch.StrategicMergePatchType).
 			Resource("services").
 			Namespace(clone.Namespace).
 			Name(clone.Name).

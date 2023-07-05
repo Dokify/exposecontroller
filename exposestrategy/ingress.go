@@ -8,11 +8,14 @@ import (
 
 	"github.com/golang/glog"
 	"github.com/pkg/errors"
+	"k8s.io/api/core/v1"
 	api "k8s.io/api/core/v1"
-	extensions "k8s.io/api/extensions/v1"
+	extensions "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	client "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
 	apierrors "k8s.io/kubernetes/pkg/api/errors"
 	v1 "k8s.io/kubernetes/pkg/api/v1"
-	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/util/intstr"
 )
@@ -78,7 +81,7 @@ func NewIngressStrategy(client *client.Client, encoder runtime.Encoder, domain s
 	}, nil
 }
 
-func (s *IngressStrategy) Add(svc *api.Service) error {
+func (s *IngressStrategy) Add(svc *v1.Service) error {
 	appName := svc.Annotations["fabric8.io/ingress.name"]
 	if appName == "" {
 		if svc.Labels["release"] != "" {
@@ -290,11 +293,11 @@ func (s *IngressStrategy) Add(svc *api.Service) error {
 		}
 	}
 
-	cloned, err := api.Scheme.DeepCopy(svc)
+	cloned, err := scheme.Scheme.DeepCopy(svc)
 	if err != nil {
 		return errors.Wrap(err, "failed to clone service")
 	}
-	clone, ok := cloned.(*api.Service)
+	clone, ok := cloned.(*v1.Service)
 	if !ok {
 		return errors.Errorf("cloned to wrong type: %s", reflect.TypeOf(cloned))
 	}
@@ -313,7 +316,7 @@ func (s *IngressStrategy) Add(svc *api.Service) error {
 		return errors.Wrap(err, "failed to create patch")
 	}
 	if patch != nil {
-		err = s.client.Patch(api.StrategicMergePatchType).
+		err = s.client.Patch(strategicpatch.StrategicMergePatchType).
 			Resource("services").
 			Namespace(svc.Namespace).
 			Name(svc.Name).
@@ -326,7 +329,7 @@ func (s *IngressStrategy) Add(svc *api.Service) error {
 	return nil
 }
 
-func (s *IngressStrategy) Remove(svc *api.Service) error {
+func (s *IngressStrategy) Remove(svc *v1.Service) error {
 	var appName string
 	if svc.Labels["release"] != "" {
 		appName = strings.Replace(svc.Name, svc.Labels["release"]+"-", "", 1)
@@ -338,11 +341,11 @@ func (s *IngressStrategy) Remove(svc *api.Service) error {
 		return errors.Wrap(err, "failed to delete ingress")
 	}
 
-	cloned, err := api.Scheme.DeepCopy(svc)
+	cloned, err := scheme.Scheme.DeepCopy(svc)
 	if err != nil {
 		return errors.Wrap(err, "failed to clone service")
 	}
-	clone, ok := cloned.(*api.Service)
+	clone, ok := cloned.(*v1.Service)
 	if !ok {
 		return errors.Errorf("cloned to wrong type: %s", reflect.TypeOf(cloned))
 	}
@@ -354,7 +357,7 @@ func (s *IngressStrategy) Remove(svc *api.Service) error {
 		return errors.Wrap(err, "failed to create patch")
 	}
 	if patch != nil {
-		err = s.client.Patch(api.StrategicMergePatchType).
+		err = s.client.Patch(strategicpatch.StrategicMergePatchType).
 			Resource("services").
 			Namespace(clone.Namespace).
 			Name(clone.Name).
@@ -367,7 +370,7 @@ func (s *IngressStrategy) Remove(svc *api.Service) error {
 	return nil
 }
 
-func (s *IngressStrategy) isTLSEnabled(svc *api.Service) bool {
+func (s *IngressStrategy) isTLSEnabled(svc *v1.Service) bool {
 	if svc != nil && svc.Annotations["jenkins-x.io/skip.tls"] == "true" {
 		return false
 	}

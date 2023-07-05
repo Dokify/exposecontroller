@@ -7,8 +7,10 @@ import (
 	"sort"
 	"strings"
 
-	"k8s.io/kubernetes/pkg/api"
-	client "k8s.io/kubernetes/pkg/client/unversioned"
+	api "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	client "k8s.io/client-go/kubernetes"
 )
 
 func rollingUpgradeDeployments(cm *api.ConfigMap, c *client.Client) error {
@@ -16,7 +18,7 @@ func rollingUpgradeDeployments(cm *api.ConfigMap, c *client.Client) error {
 	configMapName := cm.Name
 	configMapVersion := convertConfigMapToToken(cm)
 
-	deployments, err := c.Deployments(ns).List(api.ListOptions{})
+	deployments, err := c.Deployments(ns).List(metav1.ListOptions{})
 	if err != nil {
 		return errors.Wrap(err, "failed to list deployments")
 	}
@@ -61,7 +63,7 @@ func convertConfigMapToToken(cm *api.ConfigMap) string {
 	return text
 }
 
-func updateContainers(containers []api.Container, annotationValue, configMapVersion string) bool {
+func updateContainers(containers []corev1.Container, annotationValue, configMapVersion string) bool {
 	// we can have multiple configmaps to update
 	answer := false
 	configmaps := strings.Split(annotationValue, ",")
@@ -83,7 +85,7 @@ func updateContainers(containers []api.Container, annotationValue, configMapVers
 			}
 			// if no existing env var exists lets create one
 			if !matched {
-				e := api.EnvVar{
+				e := corev1.EnvVar{
 					Name:  configmapEnvar,
 					Value: configMapVersion,
 				}
