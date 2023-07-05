@@ -14,22 +14,21 @@ import (
 	"github.com/golang/glog"
 	"github.com/pkg/errors"
 
-	"k8s.io/kubernetes/pkg/api"
-	uapi "k8s.io/kubernetes/pkg/api/unversioned"
+	uapi "k8s.io/apimachinery/pkg/apis/meta/v1"
+	clientset "k8s.io/client-go/kubernetes"
+	restclient "k8s.io/client-go/rest"
 	"k8s.io/kubernetes/pkg/client/cache"
 	"k8s.io/kubernetes/pkg/client/record"
-	"k8s.io/kubernetes/pkg/client/restclient"
-	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/controller/framework"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/watch"
 
 	"github.com/jenkins-x/exposecontroller/exposestrategy"
 
-	oclient "github.com/openshift/origin/pkg/client"
-	oauthapi "github.com/openshift/origin/pkg/oauth/api"
-	oauthapiv1 "github.com/openshift/origin/pkg/oauth/api/v1"
 	"gopkg.in/v2/yaml"
+	"k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/scheme"
 )
 
 const (
@@ -54,7 +53,7 @@ const (
 )
 
 type Controller struct {
-	client *client.Client
+	client *clientset.Clientset
 
 	svcController *framework.Controller
 	svcLister     cache.StoreToServiceLister
@@ -67,7 +66,7 @@ type Controller struct {
 }
 
 func NewController(
-	kubeClient *client.Client,
+	kubeClient *clientset.Clientset,
 	restClientConfig *restclient.Config,
 	encoder runtime.Encoder,
 	resyncPeriod time.Duration, namespace string, config *Config) (*Controller, error) {
@@ -81,7 +80,7 @@ func NewController(
 		client: kubeClient,
 		stopCh: make(chan struct{}),
 		config: config,
-		recorder: eventBroadcaster.NewRecorder(api.EventSource{
+		recorder: eventBroadcaster.NewRecorder(v1.EventSource{
 			Component: "expose-controller",
 		}),
 	}
@@ -91,12 +90,12 @@ func NewController(
 		return nil, errors.Wrap(err, "failed to create new strategy")
 	}
 
-	var oc *oclient.Client = nil
+	var oc *oclientset.Clientset = nil
 	authorizeURL := ""
 	if isOpenShift(kubeClient) {
 		// register openshift schemas
-		oauthapi.AddToScheme(api.Scheme)
-		oauthapiv1.AddToScheme(api.Scheme)
+		oauthapi.AddToScheme(scheme.Scheme)
+		oauthapiv1.AddToScheme(scheme.Scheme)
 
 		ocfg := *restClientConfig
 		ocfg.APIPath = ""
@@ -142,11 +141,11 @@ func NewController(
 			ListFunc:  serviceListFunc(c.client, namespace),
 			WatchFunc: serviceWatchFunc(c.client, namespace),
 		},
-		&api.Service{},
+		&v1.Service{},
 		resyncPeriod,
 		framework.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				svc := obj.(*api.Service)
+				svc := obj.(*v1.Service)
 				if svc.Labels[exposestrategy.ExposeLabel.Key] == exposestrategy.ExposeLabel.Value ||
 					svc.Annotations[exposestrategy.ExposeAnnotation.Key] == exposestrategy.ExposeAnnotation.Value ||
 					svc.Annotations[exposestrategy.InjectAnnotation.Key] == exposestrategy.InjectAnnotation.Value {
@@ -161,7 +160,7 @@ func NewController(
 				}
 			},
 			UpdateFunc: func(oldObj interface{}, newObj interface{}) {
-				svc := newObj.(*api.Service)
+				svc := newObj.(*v1.Service)
 				if svc.Labels[exposestrategy.ExposeLabel.Key] == exposestrategy.ExposeLabel.Value ||
 					svc.Annotations[exposestrategy.ExposeAnnotation.Key] == exposestrategy.ExposeAnnotation.Value ||
 					svc.Annotations[exposestrategy.InjectAnnotation.Key] == exposestrategy.InjectAnnotation.Value {
@@ -174,7 +173,7 @@ func NewController(
 					}
 					updateRelatedResources(kubeClient, oc, svc, config, authorizeURL)
 				} else {
-					oldSvc := oldObj.(*api.Service)
+					oldSvc := oldObj.(*v1.Service)
 					if oldSvc.Labels[exposestrategy.ExposeLabel.Key] == exposestrategy.ExposeLabel.Value ||
 						oldSvc.Annotations[exposestrategy.ExposeAnnotation.Key] == exposestrategy.ExposeAnnotation.Value ||
 						svc.Annotations[exposestrategy.InjectAnnotation.Key] == exposestrategy.InjectAnnotation.Value {
@@ -198,7 +197,7 @@ func NewController(
 					if !isServiceWhitelisted(name, config) {
 						return
 					}
-					err := strategy.Remove(&api.Service{ObjectMeta: api.ObjectMeta{Namespace: ns, Name: name}})
+					err := strategy.Remove(&v1.Service{ObjectMeta: v1.ObjectMeta{Namespace: ns, Name: name}})
 					if err != nil {
 						glog.Errorf("Remove failed: %v", err)
 					}
@@ -226,8 +225,8 @@ func isServiceWhitelisted(service string, config *Config) bool {
 }
 
 // findApiServerFromNode lets try default the API server URL by detecting minishift/minikube for single node clusters
-func findApiServerFromNode(c *client.Client) string {
-	nodes, err := c.Nodes().List(api.ListOptions{})
+func findApiServerFromNode(c *clientset.Clientset) string {
+	nodes, err := c.Nodes().List(metav1.ListOptions{})
 	if err != nil {
 		glog.Errorf("Failed to list nodes to detect minishift: %v", err)
 		return ""
@@ -257,7 +256,7 @@ func findApiServerFromNode(c *client.Client) string {
 
 }
 
-func isOpenShift(c *client.Client) bool {
+func isOpenShift(c *clientset.Clientset) bool {
 	res, err := c.Get().AbsPath("").DoRaw()
 	if err != nil {
 		glog.Errorf("Could not discover the type of your installation: %v", err)
@@ -278,7 +277,7 @@ func isOpenShift(c *client.Client) bool {
 	return false
 }
 
-func updateRelatedResources(c *client.Client, oc *oclient.Client, svc *api.Service, config *Config, authorizeURL string) {
+func updateRelatedResources(c *clientset.Clientset, oc *oclientset.Clientset, svc *v1.Service, config *Config, authorizeURL string) {
 	updateServiceConfigMap(c, oc, svc, config, authorizeURL)
 	if oc != nil {
 		updateServiceOAuthClient(oc, svc)
@@ -290,7 +289,7 @@ func updateRelatedResources(c *client.Client, oc *oclient.Client, svc *api.Servi
 	}
 }
 
-func kubernetesServiceProtocol(c *client.Client) string {
+func kubernetesServiceProtocol(c *clientset.Clientset) string {
 	hasHttp := false
 	svc, err := c.Services("default").Get("kubernetes")
 	if err != nil {
@@ -311,7 +310,7 @@ func kubernetesServiceProtocol(c *client.Client) string {
 	return "https"
 }
 
-func GetServicePort(svc *api.Service) string {
+func GetServicePort(svc *v1.Service) string {
 	for _, port := range svc.Spec.Ports {
 		tp := port.TargetPort.StrVal
 		if tp != "" {
@@ -332,7 +331,7 @@ type ConfigYaml struct {
 	Suffix     string
 }
 
-func updateServiceConfigMap(c *client.Client, oc *oclient.Client, svc *api.Service, config *Config, authorizeURL string) {
+func updateServiceConfigMap(c *clientset.Clientset, oc *oclientset.Clientset, svc *v1.Service, config *Config, authorizeURL string) {
 	name := svc.Name
 	ns := svc.Namespace
 	cm, err := c.ConfigMaps(ns).Get(name)
@@ -528,7 +527,7 @@ func firstMapValue(key string, maps ...map[string]string) string {
 	return ""
 }
 
-func (c *ConfigYaml) UpdateConfigMap(configMap *api.ConfigMap, values map[string]string) bool {
+func (c *ConfigYaml) UpdateConfigMap(configMap *v1.ConfigMap, values map[string]string) bool {
 	key := c.Key
 	if key == "" {
 		glog.Warningf("ConfigMap %s does not have a key in ConfigYaml settings %#v\n", configMap.Name, c)
@@ -567,7 +566,7 @@ func urlJoin(s1 string, s2 string) string {
 }
 
 // updateOtherConfigMaps lets update all other configmaps which want to be injected by this svc exposeURL
-func updateOtherConfigMaps(c *client.Client, oc *oclient.Client, svc *api.Service, config *Config, exposeURL string) error {
+func updateOtherConfigMaps(c *clientset.Clientset, oc *oclientset.Clientset, svc *v1.Service, config *Config, exposeURL string) error {
 	serviceName := svc.Name
 	annotationKey := "expose.service-key.config.fabric8.io/" + serviceName
 	annotationFullKey := "expose-full.service-key.config.fabric8.io/" + serviceName
@@ -575,7 +574,7 @@ func updateOtherConfigMaps(c *client.Client, oc *oclient.Client, svc *api.Servic
 	annotationNoPathKey := "expose-no-path.service-key.config.fabric8.io/" + serviceName
 	annotationFullNoProtocolKey := "expose-full-no-protocol.service-key.config.fabric8.io/" + serviceName
 	ns := svc.Namespace
-	cms, err := c.ConfigMaps(ns).List(api.ListOptions{})
+	cms, err := c.ConfigMaps(ns).List(metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
@@ -722,7 +721,7 @@ type OAuthServer struct {
 	TokenEndpoint         string `json:"token_endpoint,omitempty"`
 }
 
-func updateServiceOAuthClient(oc *oclient.Client, svc *api.Service) {
+func updateServiceOAuthClient(oc *oclientset.Clientset, svc *v1.Service) {
 	name := svc.Name
 	exposeURL := svc.Annotations[exposestrategy.ExposeAnnotationKey]
 	if len(exposeURL) > 0 {
@@ -775,14 +774,14 @@ func (c *Controller) Hasrun() bool {
 	return c.svcController.HasSynced()
 }
 
-func serviceListFunc(c *client.Client, ns string) func(api.ListOptions) (runtime.Object, error) {
-	return func(opts api.ListOptions) (runtime.Object, error) {
+func serviceListFunc(c *clientset.Clientset, ns string) func(metav1.ListOptions) (runtime.Object, error) {
+	return func(opts metav1.ListOptions) (runtime.Object, error) {
 		return c.Services(ns).List(opts)
 	}
 }
 
-func serviceWatchFunc(c *client.Client, ns string) func(options api.ListOptions) (watch.Interface, error) {
-	return func(options api.ListOptions) (watch.Interface, error) {
+func serviceWatchFunc(c *clientset.Clientset, ns string) func(options metav1.ListOptions) (watch.Interface, error) {
+	return func(options metav1.ListOptions) (watch.Interface, error) {
 		return c.Services(ns).Watch(options)
 	}
 }

@@ -5,15 +5,14 @@ import (
 
 	"github.com/pkg/errors"
 
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/runtime"
 
-	oclient "github.com/openshift/origin/pkg/client"
-	rapi "github.com/openshift/origin/pkg/route/api"
-	rapiv1 "github.com/openshift/origin/pkg/route/api/v1"
+	"k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	client "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
 	apierrors "k8s.io/kubernetes/pkg/api/errors"
-	client "k8s.io/kubernetes/pkg/client/unversioned"
 )
 
 type RouteStrategy struct {
@@ -51,8 +50,8 @@ func NewRouteStrategy(client *client.Client, oclient *oclient.Client, encoder ru
 		}
 	*/
 
-	rapi.AddToScheme(api.Scheme)
-	rapiv1.AddToScheme(api.Scheme)
+	rapi.AddToScheme(scheme.Scheme)
+	rapiv1.AddToScheme(scheme.Scheme)
 
 	return &RouteStrategy{
 		client:  client,
@@ -64,7 +63,7 @@ func NewRouteStrategy(client *client.Client, oclient *oclient.Client, encoder ru
 		http:    http}, nil
 }
 
-func (s *RouteStrategy) Add(svc *api.Service) error {
+func (s *RouteStrategy) Add(svc *v1.Service) error {
 	// we don't need to fill in the host name as openshift will do that part for us!
 	//hostName := fmt.Sprintf("%s.%s.%s", svc.Name, svc.Namespace, s.domain)
 
@@ -74,7 +73,7 @@ func (s *RouteStrategy) Add(svc *api.Service) error {
 		if apierrors.IsNotFound(err) {
 			createRoute = true
 			route = &rapi.Route{
-				ObjectMeta: api.ObjectMeta{
+				ObjectMeta: corev1.ObjectMeta{
 					Namespace: svc.Namespace,
 					Name:      svc.Name,
 				},
@@ -152,11 +151,11 @@ func (s *RouteStrategy) Add(svc *api.Service) error {
 		}
 	}
 
-	cloned, err := api.Scheme.DeepCopy(svc)
+	cloned, err := scheme.Scheme.DeepCopy(svc)
 	if err != nil {
 		return errors.Wrap(err, "failed to clone service")
 	}
-	clone, ok := cloned.(*api.Service)
+	clone, ok := cloned.(*v1.Service)
 	if !ok {
 		return errors.Errorf("cloned to wrong type: %s", reflect.TypeOf(cloned))
 	}
@@ -173,7 +172,7 @@ func (s *RouteStrategy) Add(svc *api.Service) error {
 		return errors.Wrap(err, "failed to create patch")
 	}
 	if patch != nil {
-		err = s.client.Patch(api.StrategicMergePatchType).
+		err = s.client.Patch(strategicpatch.StrategicMergePatchType).
 			Resource("services").
 			Namespace(svc.Namespace).
 			Name(svc.Name).
@@ -185,7 +184,7 @@ func (s *RouteStrategy) Add(svc *api.Service) error {
 	return nil
 }
 
-func hostNameAndProtocolFromRoute(svc *api.Service, route *rapi.Route) (string, string) {
+func hostNameAndProtocolFromRoute(svc *v1.Service, route *rapi.Route) (string, string) {
 	protocol := "http"
 	spec := route.Spec
 	hostName := spec.Host + spec.Path
@@ -197,17 +196,17 @@ func hostNameAndProtocolFromRoute(svc *api.Service, route *rapi.Route) (string, 
 	return hostName, protocol
 }
 
-func (s *RouteStrategy) Remove(svc *api.Service) error {
+func (s *RouteStrategy) Remove(svc *v1.Service) error {
 	err := s.oclient.Routes(svc.Namespace).Delete(svc.Name)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return errors.Wrap(err, "failed to delete route")
 	}
 
-	cloned, err := api.Scheme.DeepCopy(svc)
+	cloned, err := scheme.Scheme.DeepCopy(svc)
 	if err != nil {
 		return errors.Wrap(err, "failed to clone service")
 	}
-	clone, ok := cloned.(*api.Service)
+	clone, ok := cloned.(*v1.Service)
 	if !ok {
 		return errors.Errorf("cloned to wrong type: %s", reflect.TypeOf(cloned))
 	}
@@ -219,7 +218,7 @@ func (s *RouteStrategy) Remove(svc *api.Service) error {
 		return errors.Wrap(err, "failed to create patch")
 	}
 	if patch != nil {
-		err = s.client.Patch(api.StrategicMergePatchType).
+		err = s.client.Patch(strategicpatch.StrategicMergePatchType).
 			Resource("services").
 			Namespace(clone.Namespace).
 			Name(clone.Name).

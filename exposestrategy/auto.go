@@ -5,10 +5,11 @@ import (
 
 	"github.com/golang/glog"
 	"github.com/pkg/errors"
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/unversioned"
-	"k8s.io/kubernetes/pkg/client/restclient"
-	client "k8s.io/kubernetes/pkg/client/unversioned"
+	api "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	client "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/pkg/api/unversioned"
+	restclient "k8s.io/client-go/rest"
 	"k8s.io/kubernetes/pkg/runtime"
 )
 
@@ -54,7 +55,7 @@ func getAutoDefaultExposeRule(c *client.Client) (string, error) {
 
 	// lets default to Ingress on kubernetes for now
 	/*
-		nodes, err := c.Nodes().List(api.ListOptions{})
+		nodes, err := c.Nodes().List(metav1.ListOption{})
 		if err != nil {
 			return "", errors.Wrap(err, "failed to find any nodes")
 		}
@@ -69,7 +70,7 @@ func getAutoDefaultExposeRule(c *client.Client) (string, error) {
 }
 
 func getAutoDefaultDomain(c *client.Client) (string, error) {
-	nodes, err := c.Nodes().List(api.ListOptions{})
+	nodes, err := c.Nodes().List(metav1.ListOption{})
 	if err != nil {
 		return "", errors.Wrap(err, "failed to find any nodes")
 	}
@@ -88,7 +89,7 @@ func getAutoDefaultDomain(c *client.Client) (string, error) {
 
 	// check for a gofabric8 ingress labelled node
 	selector, err := unversioned.LabelSelectorAsSelector(&unversioned.LabelSelector{MatchLabels: map[string]string{"fabric8.io/externalIP": "true"}})
-	nodes, err = c.Nodes().List(api.ListOptions{LabelSelector: selector})
+	nodes, err = c.Nodes().List(metav1.ListOption{LabelSelector: selector})
 	if len(nodes.Items) == 1 {
 		node := nodes.Items[0]
 		ip, err := getExternalIP(node)

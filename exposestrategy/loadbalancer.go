@@ -5,9 +5,10 @@ import (
 
 	"github.com/pkg/errors"
 
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/v1"
-	client "k8s.io/kubernetes/pkg/client/unversioned"
+	"k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	client "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/kubernetes/pkg/runtime"
 )
 
@@ -25,17 +26,17 @@ func NewLoadBalancerStrategy(client *client.Client, encoder runtime.Encoder) (*L
 	}, nil
 }
 
-func (s *LoadBalancerStrategy) Add(svc *api.Service) error {
-	cloned, err := api.Scheme.DeepCopy(svc)
+func (s *LoadBalancerStrategy) Add(svc *v1.Service) error {
+	cloned, err := scheme.Scheme.DeepCopy(svc)
 	if err != nil {
 		return errors.Wrap(err, "failed to clone service")
 	}
-	clone, ok := cloned.(*api.Service)
+	clone, ok := cloned.(*v1.Service)
 	if !ok {
 		return errors.Errorf("cloned to wrong type: %s", reflect.TypeOf(cloned))
 	}
 
-	clone.Spec.Type = api.ServiceTypeLoadBalancer
+	clone.Spec.Type = v1.ServiceTypeLoadBalancer
 	if len(clone.Spec.LoadBalancerIP) > 0 {
 		clone, err = addServiceAnnotation(clone, clone.Spec.LoadBalancerIP)
 		if err != nil {
@@ -48,7 +49,7 @@ func (s *LoadBalancerStrategy) Add(svc *api.Service) error {
 		return errors.Wrap(err, "failed to create patch")
 	}
 	if patch != nil {
-		err = s.client.Patch(api.StrategicMergePatchType).
+		err = s.client.Patch(strategicpatch.StrategicMergePatchType).
 			Resource("services").
 			Namespace(svc.Namespace).
 			Name(svc.Name).
@@ -61,12 +62,12 @@ func (s *LoadBalancerStrategy) Add(svc *api.Service) error {
 	return nil
 }
 
-func (s *LoadBalancerStrategy) Remove(svc *api.Service) error {
-	cloned, err := api.Scheme.DeepCopy(svc)
+func (s *LoadBalancerStrategy) Remove(svc *v1.Service) error {
+	cloned, err := scheme.Scheme.DeepCopy(svc)
 	if err != nil {
 		return errors.Wrap(err, "failed to clone service")
 	}
-	clone, ok := cloned.(*api.Service)
+	clone, ok := cloned.(*v1.Service)
 	if !ok {
 		return errors.Errorf("cloned to wrong type: %s", reflect.TypeOf(svc))
 	}
@@ -78,7 +79,7 @@ func (s *LoadBalancerStrategy) Remove(svc *api.Service) error {
 		return errors.Wrap(err, "failed to create patch")
 	}
 	if patch != nil {
-		err = s.client.Patch(api.StrategicMergePatchType).
+		err = s.client.Patch(strategicpatch.StrategicMergePatchType).
 			Resource("services").
 			Namespace(clone.Namespace).
 			Name(clone.Name).

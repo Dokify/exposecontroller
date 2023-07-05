@@ -7,15 +7,15 @@ import (
 	"github.com/pkg/errors"
 
 	oclient "github.com/openshift/origin/pkg/client"
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/client/restclient"
-	client "k8s.io/kubernetes/pkg/client/unversioned"
+	api "k8s.io/api/core/v1"
+	client "k8s.io/client-go/kubernetes"
+	restclient "k8s.io/client-go/rest"
 	"k8s.io/kubernetes/pkg/runtime"
 )
 
 type ExposeStrategy interface {
-	Add(svc *api.Service) error
-	Remove(svc *api.Service) error
+	Add(svc *v1.Service) error
+	Remove(svc *v1.Service) error
 }
 
 type Label struct {
@@ -30,10 +30,10 @@ var (
 	ExposeHostNameAsAnnotationKey = "fabric8.io/exposeHostNameAs"
 	ExposeAnnotationKey           = "fabric8.io/exposeUrl"
 	ExposePortAnnotationKey       = "fabric8.io/exposePort"
-	ApiServicePathAnnotationKey   = "api.service.kubernetes.io/path"
+	ApiServicePathAnnotationKey   = "v1.Service.kubernetes.io/path"
 )
 
-func New(exposer, domain, internalDomain, urltemplate, nodeIP, routeHost, pathMode string, routeUsePath, http, tlsAcme bool, tlsSecretName string, tlsUseWildcard bool, ingressClass string, client *client.Client, restClientConfig *restclient.Config, encoder runtime.Encoder) (ExposeStrategy, error) {
+func New(exposer, domain, internalDomain, urltemplate, nodeIP, routeHost, pathMode string, routeUsePath, http, tlsAcme bool, tlsSecretName string, tlsUseWildcard bool, ingressClass string, client *client.Clientset, restClientConfig *restclient.Config, encoder runtime.Encoder) (ExposeStrategy, error) {
 	switch strings.ToLower(exposer) {
 	case "ambassador":
 		strategy, err := NewAmbassadorStrategy(client, encoder, domain, http, tlsAcme, tlsSecretName, urltemplate, pathMode)

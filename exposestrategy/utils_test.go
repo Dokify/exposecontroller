@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api"
+	api "k8s.io/api/core/v1"
 )
 
 func TestAddServiceAnnotationWithProtocol(t *testing.T) {

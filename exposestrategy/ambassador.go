@@ -9,8 +9,8 @@ import (
 	"github.com/golang/glog"
 	"github.com/pkg/errors"
 	"gopkg.in/v2/yaml"
-	"k8s.io/kubernetes/pkg/api"
-	client "k8s.io/kubernetes/pkg/client/unversioned"
+	"k8s.io/api/core/v1"
+	client "k8s.io/client-go/kubernetes"
 	"k8s.io/kubernetes/pkg/runtime"
 )
 
@@ -19,7 +19,7 @@ import (
 // )
 
 type AmbassadorStrategy struct {
-	client  *client.Client
+	client  *client.Clientset
 	encoder runtime.Encoder
 
 	domain        string
@@ -32,7 +32,7 @@ type AmbassadorStrategy struct {
 
 var _ ExposeStrategy = &AmbassadorStrategy{}
 
-func NewAmbassadorStrategy(client *client.Client, encoder runtime.Encoder, domain string, http, tlsAcme bool, tlsSecretName, urltemplate, pathMode string) (*AmbassadorStrategy, error) {
+func NewAmbassadorStrategy(client *client.Clientset, encoder runtime.Encoder, domain string, http, tlsAcme bool, tlsSecretName, urltemplate, pathMode string) (*AmbassadorStrategy, error) {
 	glog.Infof("NewAmbassadorStrategy 1 %v", http)
 	t, err := typeOfMaster(client)
 	if err != nil {
@@ -69,7 +69,7 @@ func NewAmbassadorStrategy(client *client.Client, encoder runtime.Encoder, domai
 	}, nil
 }
 
-func (s *AmbassadorStrategy) Add(svc *api.Service) error {
+func (s *AmbassadorStrategy) Add(svc *v1.Service) error {
 	appName := svc.Annotations["fabric8.io/ingress.name"]
 	if appName == "" {
 		if svc.Labels["release"] != "" {
@@ -184,7 +184,7 @@ func (s *AmbassadorStrategy) Add(svc *api.Service) error {
 	return nil
 }
 
-func (s *AmbassadorStrategy) Remove(svc *api.Service) error {
+func (s *AmbassadorStrategy) Remove(svc *v1.Service) error {
 	delete(svc.Annotations, "getambassador.io/config")
 
 	_, err := s.client.Services(svc.Namespace).Update(svc)
@@ -194,7 +194,7 @@ func (s *AmbassadorStrategy) Remove(svc *api.Service) error {
 	return nil
 }
 
-func (s *AmbassadorStrategy) isTLSEnabled(svc *api.Service) bool {
+func (s *AmbassadorStrategy) isTLSEnabled(svc *v1.Service) bool {
 	if svc != nil && svc.Annotations["jenkins-x.io/skip.tls"] == "true" {
 		return false
 	}

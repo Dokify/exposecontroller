@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"k8s.io/kubernetes/pkg/client/unversioned"
 	"net/http"
 	"net/http/pprof"
 	"os"
@@ -18,6 +17,7 @@ import (
 	"github.com/spf13/pflag"
 	api "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -245,7 +245,7 @@ func main() {
 	}
 }
 
-func tryFindConfig(kubeClient *unversioned.Client, ns string) *controller.Config {
+func tryFindConfig(kubeClient *kubernetes.Clientset, ns string) *controller.Config {
 	var controllerConfig *controller.Config
 	cm, err := kubeClient.ConfigMaps(ns).Get("exposecontroller")
 	if err == nil {
