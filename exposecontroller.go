@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/jenkins-x/exposecontroller/version"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
@@ -61,7 +62,7 @@ func main() {
 	configFlags.AddFlags(flags)
 	var err error
 
-	err = flags.Parse(os.Args)
+	flag.Parse()
 	if err != nil {
 		glog.Fatalf("failed to parse flags: %v", err)
 	}
@@ -71,6 +72,8 @@ func main() {
 	if err != nil {
 		glog.Fatalf("failed to CommandLine flags: %v", err)
 	}
+
+	glog.Infof("Using build: %v", version.Version)
 
 	var restClientConfig *rest.Config
 
