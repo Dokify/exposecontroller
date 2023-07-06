@@ -9,6 +9,7 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"net/http"
 	"net/http/pprof"
@@ -58,15 +59,31 @@ func main() {
 	ctx := context.Background()
 	configFlags := genericclioptions.NewConfigFlags(true)
 	configFlags.AddFlags(flags)
+	var err error
 
-	kubeconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		clientcmd.NewDefaultClientConfigLoadingRules(),
-		&clientcmd.ConfigOverrides{},
-	)
-
-	restClientConfig, err := kubeconfig.ClientConfig()
+	err = flags.Parse(os.Args)
 	if err != nil {
-		glog.Fatalf("failed to get Kubernetes client config: %v", err)
+		glog.Fatalf("failed to parse flags: %v", err)
+	}
+
+	err = flag.CommandLine.Parse([]string{})
+
+	if err != nil {
+		glog.Fatalf("failed to CommandLine flags: %v", err)
+	}
+
+	var restClientConfig *rest.Config
+
+	if restClientConfig, err = rest.InClusterConfig(); err != nil {
+		kubeconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+			clientcmd.NewDefaultClientConfigLoadingRules(),
+			&clientcmd.ConfigOverrides{},
+		)
+
+		restClientConfig, err = kubeconfig.ClientConfig()
+		if err != nil {
+			glog.Fatalf("failed to get Kubernetes client config: %v", err)
+		}
 	}
 
 	kubeClient, err := kubernetes.NewForConfig(restClientConfig)
