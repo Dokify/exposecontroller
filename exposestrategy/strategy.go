@@ -6,6 +6,7 @@ import (
 	"github.com/golang/glog"
 	"github.com/pkg/errors"
 
+	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	client "k8s.io/client-go/kubernetes"
 	restclient "k8s.io/client-go/rest"
@@ -54,17 +55,6 @@ func New(exposer, domain, internalDomain, urltemplate, nodeIP, routeHost, pathMo
 	case "ingress":
 		glog.Infof("stratagy.New %v", http)
 		strategy, err := NewIngressStrategy(client, encoder, domain, internalDomain, http, tlsAcme, tlsSecretName, tlsUseWildcard, urltemplate, pathMode, ingressClass)
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to create ingress expose strategy")
-		}
-		return strategy, nil
-	case "route":
-		ocfg := *restClientConfig
-		ocfg.APIPath = ""
-		ocfg.GroupVersion = nil
-		ocfg.NegotiatedSerializer = nil
-		oc, _ := oclient.New(&ocfg)
-		strategy, err := NewRouteStrategy(client, oc, encoder, domain, routeHost, routeUsePath, http)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to create ingress expose strategy")
 		}

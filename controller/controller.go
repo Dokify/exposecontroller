@@ -2,19 +2,18 @@ package controller
 
 import (
 	"bytes"
-	"encoding/json"
+	"context"
 	"fmt"
-	"net/http"
-	"net/url"
-	"os"
+	"gopkg.in/yaml.v2"
+	"k8s.io/client-go/informers"
+
+	"k8s.io/client-go/kubernetes/scheme"
+	url_parser "net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/golang/glog"
-	"github.com/pkg/errors"
-
-	uapi "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientset "k8s.io/client-go/kubernetes"
 	restclient "k8s.io/client-go/rest"
@@ -23,9 +22,10 @@ import (
 
 	"github.com/jenkins-x/exposecontroller/exposestrategy"
 
+	"github.com/pkg/errors"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/scheme"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 )
 
 const (
@@ -52,8 +52,8 @@ const (
 type Controller struct {
 	client *clientset.Clientset
 
-	svcController *framework.Controller
-	svcLister     cache.StoreToServiceLister
+	svcInformer cache.SharedIndexInformer
+	svcLister   cache.Store
 
 	config *Config
 
@@ -69,141 +69,94 @@ func NewController(
 	resyncPeriod time.Duration, namespace string, config *Config) (*Controller, error) {
 	eventBroadcaster := record.NewBroadcaster()
 	eventBroadcaster.StartLogging(glog.Infof)
-	eventBroadcaster.StartRecordingToSink(kubeClient.Events(namespace))
+	eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: kubeClient.CoreV1().Events(namespace)})
 
 	glog.Infof("NewController %v", config.HTTP)
 
-	c := Controller{
+	c := &Controller{
 		client: kubeClient,
 		stopCh: make(chan struct{}),
 		config: config,
-		recorder: eventBroadcaster.NewRecorder(v1.EventSource{
+		recorder: eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{
 			Component: "expose-controller",
 		}),
 	}
+
+	informerFactory := informers.NewSharedInformerFactory(kubeClient, resyncPeriod)
+	c.svcInformer = informerFactory.Core().V1().Services().Informer()
 
 	strategy, err := exposestrategy.New(config.Exposer, config.Domain, config.InternalDomain, config.UrlTemplate, config.NodeIP, config.RouteHost, config.PathMode, config.RouteUsePath, config.HTTP, config.TLSAcme, config.TLSSecretName, config.TLSUseWildcard, config.IngressClass, kubeClient, restClientConfig, encoder)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create new strategy")
 	}
 
-	var oc *oclientset.Clientset = nil
-	authorizeURL := ""
-	if isOpenShift(kubeClient) {
-		// register openshift schemas
-		oauthapi.AddToScheme(scheme.Scheme)
-		oauthapiv1.AddToScheme(scheme.Scheme)
-
-		ocfg := *restClientConfig
-		ocfg.APIPath = ""
-		ocfg.GroupVersion = nil
-		ocfg.NegotiatedSerializer = nil
-		oc, _ = oclient.New(&ocfg)
-
-		authorizeURL = findOAuthAuthorizeURL()
-		if len(authorizeURL) == 0 {
-			authorizeURL = os.Getenv(OAuthAuthorizeUrlEnvVar)
-		}
-		if len(authorizeURL) == 0 {
-			authorizeURL = config.ApiServer
-			if len(authorizeURL) == 0 {
-				authorizeURL = findApiServerFromNode(kubeClient)
-				config.ApiServer = authorizeURL
+	_, err = c.svcInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			svc := obj.(*v1.Service)
+			if svc.Labels[exposestrategy.ExposeLabel.Key] == exposestrategy.ExposeLabel.Value ||
+				svc.Annotations[exposestrategy.ExposeAnnotation.Key] == exposestrategy.ExposeAnnotation.Value ||
+				svc.Annotations[exposestrategy.InjectAnnotation.Key] == exposestrategy.InjectAnnotation.Value {
+				if !isServiceWhitelisted(svc.GetName(), config) {
+					return
+				}
+				err := strategy.Add(svc)
+				if err != nil {
+					glog.Errorf("Add failed: %v", err)
+				}
+				updateRelatedResources(kubeClient, svc, config)
 			}
-			if len(authorizeURL) > 0 {
-				if !strings.HasPrefix(authorizeURL, "http:") && !strings.HasPrefix(authorizeURL, "https:") {
-					authorizeURL = "https://" + authorizeURL
-				}
-				authPath := config.AuthorizePath
-				if len(authPath) == 0 {
-					authPath = "/oauth/authorize"
-				}
-				if !strings.HasPrefix(authPath, "/") {
-					authPath = "/" + authPath
-				}
-				authorizeURL = strings.TrimSuffix(authorizeURL, "/") + authPath
-			}
-		}
-		glog.Infof("Using OAuth Authorize URL: %s", authorizeURL)
-		if len(authorizeURL) == 0 {
-			glog.Warningf("Please use $%s to define the OAuth Authorize URL!", OAuthAuthorizeUrlEnvVar)
-		}
-	}
-	if len(config.ApiServerProtocol) == 0 {
-		config.ApiServerProtocol = kubernetesServiceProtocol(kubeClient)
-	}
-
-	c.svcLister.Store, c.svcController = framework.NewInformer(
-		&cache.ListWatch{
-			ListFunc:  serviceListFunc(c.client, namespace),
-			WatchFunc: serviceWatchFunc(c.client, namespace),
 		},
-		&v1.Service{},
-		resyncPeriod,
-		framework.ResourceEventHandlerFuncs{
-			AddFunc: func(obj interface{}) {
-				svc := obj.(*v1.Service)
-				if svc.Labels[exposestrategy.ExposeLabel.Key] == exposestrategy.ExposeLabel.Value ||
-					svc.Annotations[exposestrategy.ExposeAnnotation.Key] == exposestrategy.ExposeAnnotation.Value ||
+		UpdateFunc: func(oldObj interface{}, newObj interface{}) {
+			svc := newObj.(*v1.Service)
+			if svc.Labels[exposestrategy.ExposeLabel.Key] == exposestrategy.ExposeLabel.Value ||
+				svc.Annotations[exposestrategy.ExposeAnnotation.Key] == exposestrategy.ExposeAnnotation.Value ||
+				svc.Annotations[exposestrategy.InjectAnnotation.Key] == exposestrategy.InjectAnnotation.Value {
+				if !isServiceWhitelisted(svc.GetName(), config) {
+					return
+				}
+				err := strategy.Add(svc)
+				if err != nil {
+					glog.Errorf("Add failed: %v", err)
+				}
+				updateRelatedResources(kubeClient, svc, config)
+			} else {
+				oldSvc := oldObj.(*v1.Service)
+				if oldSvc.Labels[exposestrategy.ExposeLabel.Key] == exposestrategy.ExposeLabel.Value ||
+					oldSvc.Annotations[exposestrategy.ExposeAnnotation.Key] == exposestrategy.ExposeAnnotation.Value ||
 					svc.Annotations[exposestrategy.InjectAnnotation.Key] == exposestrategy.InjectAnnotation.Value {
 					if !isServiceWhitelisted(svc.GetName(), config) {
 						return
 					}
-					err := strategy.Add(svc)
-					if err != nil {
-						glog.Errorf("Add failed: %v", err)
-					}
-					updateRelatedResources(kubeClient, oc, svc, config, authorizeURL)
-				}
-			},
-			UpdateFunc: func(oldObj interface{}, newObj interface{}) {
-				svc := newObj.(*v1.Service)
-				if svc.Labels[exposestrategy.ExposeLabel.Key] == exposestrategy.ExposeLabel.Value ||
-					svc.Annotations[exposestrategy.ExposeAnnotation.Key] == exposestrategy.ExposeAnnotation.Value ||
-					svc.Annotations[exposestrategy.InjectAnnotation.Key] == exposestrategy.InjectAnnotation.Value {
-					if !isServiceWhitelisted(svc.GetName(), config) {
-						return
-					}
-					err := strategy.Add(svc)
-					if err != nil {
-						glog.Errorf("Add failed: %v", err)
-					}
-					updateRelatedResources(kubeClient, oc, svc, config, authorizeURL)
-				} else {
-					oldSvc := oldObj.(*v1.Service)
-					if oldSvc.Labels[exposestrategy.ExposeLabel.Key] == exposestrategy.ExposeLabel.Value ||
-						oldSvc.Annotations[exposestrategy.ExposeAnnotation.Key] == exposestrategy.ExposeAnnotation.Value ||
-						svc.Annotations[exposestrategy.InjectAnnotation.Key] == exposestrategy.InjectAnnotation.Value {
-						if !isServiceWhitelisted(svc.GetName(), config) {
-							return
-						}
-						err := strategy.Remove(svc)
-						if err != nil {
-							glog.Errorf("Remove failed: %v", err)
-						}
-					}
-				}
-			},
-			DeleteFunc: func(obj interface{}) {
-				svc, ok := obj.(cache.DeletedFinalStateUnknown)
-				if ok {
-					// service key is in the form namespace/name
-					split := strings.Split(svc.Key, "/")
-					ns := split[0]
-					name := split[1]
-					if !isServiceWhitelisted(name, config) {
-						return
-					}
-					err := strategy.Remove(&v1.Service{ObjectMeta: v1.ObjectMeta{Namespace: ns, Name: name}})
+					err := strategy.Remove(svc)
 					if err != nil {
 						glog.Errorf("Remove failed: %v", err)
 					}
 				}
-			},
+			}
 		},
-	)
+		DeleteFunc: func(obj interface{}) {
+			svc, ok := obj.(cache.DeletedFinalStateUnknown)
+			if ok {
+				// service key is in the form namespace/name
+				split := strings.Split(svc.Key, "/")
+				ns := split[0]
+				name := split[1]
+				if !isServiceWhitelisted(name, config) {
+					return
+				}
+				err := strategy.Remove(&v1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name}})
+				if err != nil {
+					glog.Errorf("Remove failed: %v", err)
+				}
+			}
+		},
+	})
 
-	return &c, nil
+	if err != nil {
+		return nil, err
+	}
+
+	return c, nil
 }
 
 // isServiceWhitelisted checks if a service is white-listed in the controller configuration, allow all services if
@@ -221,74 +174,22 @@ func isServiceWhitelisted(service string, config *Config) bool {
 	return false
 }
 
-// findApiServerFromNode lets try default the API server URL by detecting minishift/minikube for single node clusters
-func findApiServerFromNode(c *clientset.Clientset) string {
-	nodes, err := c.Nodes().List(metav1.ListOptions{})
-	if err != nil {
-		glog.Errorf("Failed to list nodes to detect minishift: %v", err)
-		return ""
-	}
-	items := nodes.Items
-	if len(items) != 1 {
-		glog.Errorf("Number of nodes is %d. We need 1 to detect minishift. Please use  to list nodes to detect minishift: %v", len(items), err)
-		return ""
-	}
-	node := items[0]
-	port := "8443"
-	ann := node.Annotations
-	host := ""
-	if ann != nil {
-		host = ann["kubernetes.io/hostname"]
-	}
-	if len(host) == 0 {
-		host = node.Spec.ExternalID
-	}
-	if len(host) == 0 {
-		host = node.Name
-	}
-	if len(host) > 0 {
-		return host + ":" + port
-	}
-	return ""
-
-}
-
-func isOpenShift(c *clientset.Clientset) bool {
-	res, err := c.Get().AbsPath("").DoRaw()
-	if err != nil {
-		glog.Errorf("Could not discover the type of your installation: %v", err)
-		return false
-	}
-
-	var rp uapi.RootPaths
-	err = json.Unmarshal(res, &rp)
-	if err != nil {
-		glog.Errorf("Could not discover the type of your installation: %v", err)
-		return false
-	}
-	for _, p := range rp.Paths {
-		if p == "/oapi" {
-			return true
-		}
-	}
-	return false
-}
-
-func updateRelatedResources(c *clientset.Clientset, oc *oclientset.Clientset, svc *v1.Service, config *Config, authorizeURL string) {
-	updateServiceConfigMap(c, oc, svc, config, authorizeURL)
-	if oc != nil {
-		updateServiceOAuthClient(oc, svc)
-	}
+func updateRelatedResources(c *clientset.Clientset, svc *v1.Service, config *Config) {
+	updateServiceConfigMap(c, svc, config)
 
 	exposeURL := svc.Annotations[exposestrategy.ExposeAnnotationKey]
 	if len(exposeURL) > 0 {
-		updateOtherConfigMaps(c, oc, svc, config, exposeURL)
+		err := updateOtherConfigMaps(c, svc, config, exposeURL)
+
+		if err != nil {
+			return
+		}
 	}
 }
 
 func kubernetesServiceProtocol(c *clientset.Clientset) string {
 	hasHttp := false
-	svc, err := c.Services("default").Get("kubernetes")
+	svc, err := c.CoreV1().Services("default").Get(context.Background(), "kubernetes", metav1.GetOptions{})
 	if err != nil {
 		glog.Warningf("Could not find kubernetes service in the default namespace so we could not detect whether to use http or https as the apiserver protocol. Error: %v", err)
 	} else {
@@ -328,10 +229,10 @@ type ConfigYaml struct {
 	Suffix     string
 }
 
-func updateServiceConfigMap(c *clientset.Clientset, oc *oclientset.Clientset, svc *v1.Service, config *Config, authorizeURL string) {
+func updateServiceConfigMap(c *clientset.Clientset, svc *v1.Service, config *Config) {
 	name := svc.Name
 	ns := svc.Namespace
-	cm, err := c.ConfigMaps(ns).Get(name)
+	cm, err := c.CoreV1().ConfigMaps(ns).Get(context.Background(), name, metav1.GetOptions{})
 	apiserverURL := ""
 	apiserver := ""
 	apiserverProtocol := ""
@@ -357,11 +258,6 @@ func updateServiceConfigMap(c *clientset.Clientset, oc *oclientset.Clientset, sv
 					updated = true
 				}
 			}
-			if len(consoleURL) == 0 {
-				if isOpenShift(c) {
-					consoleURL = urlJoin(apiserverURL, "/console")
-				}
-			}
 		}
 		if len(consoleURL) > 0 {
 			consoleURLKey := cm.Annotations[ExposeConfigConsoleURLKeyAnnotation]
@@ -377,15 +273,6 @@ func updateServiceConfigMap(c *clientset.Clientset, oc *oclientset.Clientset, sv
 			if cm.Data[apiserverProtocolKey] != apiserverProtocol {
 				cm.Data[apiserverProtocolKey] = apiserverProtocol
 				updated = true
-			}
-		}
-		if len(authorizeURL) > 0 && oc != nil {
-			authorizeURLKey := cm.Annotations[ExposeConfigOAuthAuthorizeURLKeyAnnotation]
-			if len(authorizeURLKey) > 0 {
-				if cm.Data[authorizeURLKey] != authorizeURL {
-					cm.Data[authorizeURLKey] = authorizeURL
-					updated = true
-				}
 			}
 		}
 
@@ -423,7 +310,7 @@ func updateServiceConfigMap(c *clientset.Clientset, oc *oclientset.Clientset, sv
 		exposeURL := svc.Annotations[exposestrategy.ExposeAnnotationKey]
 		if len(exposeURL) > 0 {
 			host := ""
-			url, err := url.Parse(exposeURL)
+			url, err := url_parser.Parse(exposeURL)
 			if err != nil {
 				glog.Errorf("Failed to parse expose URL %s for service %s  error: %v", exposeURL, name, err)
 
@@ -482,7 +369,7 @@ func updateServiceConfigMap(c *clientset.Clientset, oc *oclientset.Clientset, sv
 		}
 		if updated {
 			glog.Infof("Updating ConfigMap %s/%s", ns, name)
-			_, err = c.ConfigMaps(ns).Update(cm)
+			_, err = c.CoreV1().ConfigMaps(ns).Update(context.Background(), cm, metav1.UpdateOptions{})
 			if err != nil {
 				glog.Errorf("Failed to update ConfigMap %s error: %v", name, err)
 			}
@@ -497,7 +384,7 @@ func updateServiceConfigMap(c *clientset.Clientset, oc *oclientset.Clientset, sv
 // returns the path starting with a `/` character for the given URL
 func urlPath(urlText string) string {
 	answer := "/"
-	u, err := url.Parse(urlText)
+	u, err := url_parser.Parse(urlText)
 	if err != nil {
 		glog.Warningf("Could not parse exposeUrl: %s due to: %s", urlText, err)
 	} else {
@@ -563,7 +450,7 @@ func urlJoin(s1 string, s2 string) string {
 }
 
 // updateOtherConfigMaps lets update all other configmaps which want to be injected by this svc exposeURL
-func updateOtherConfigMaps(c *clientset.Clientset, oc *oclientset.Clientset, svc *v1.Service, config *Config, exposeURL string) error {
+func updateOtherConfigMaps(c *clientset.Clientset, svc *v1.Service, config *Config, exposeURL string) error {
 	serviceName := svc.Name
 	annotationKey := "expose.service-key.config.fabric8.io/" + serviceName
 	annotationFullKey := "expose-full.service-key.config.fabric8.io/" + serviceName
@@ -571,7 +458,7 @@ func updateOtherConfigMaps(c *clientset.Clientset, oc *oclientset.Clientset, svc
 	annotationNoPathKey := "expose-no-path.service-key.config.fabric8.io/" + serviceName
 	annotationFullNoProtocolKey := "expose-full-no-protocol.service-key.config.fabric8.io/" + serviceName
 	ns := svc.Namespace
-	cms, err := c.ConfigMaps(ns).List(metav1.ListOptions{})
+	cms, err := c.CoreV1().ConfigMaps(ns).List(context.Background(), metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
@@ -613,7 +500,7 @@ func updateOtherConfigMaps(c *clientset.Clientset, oc *oclientset.Clientset, svc
 			cm.Data = map[string]string{}
 		}
 		if len(updateKey) > 0 {
-			u, err := url.Parse(exposeURL)
+			u, err := url_parser.Parse(exposeURL)
 			if err != nil {
 				glog.Warningf("Failed to parse URL %s due to %s", exposeURL, err)
 			} else {
@@ -682,34 +569,14 @@ func updateOtherConfigMaps(c *clientset.Clientset, oc *oclientset.Clientset, svc
 			}
 		}
 		if update {
-			_, err = c.ConfigMaps(ns).Update(&cm)
+			_, err = c.CoreV1().ConfigMaps(ns).Update(context.Background(), &cm, metav1.UpdateOptions{})
 			if err != nil {
 				return fmt.Errorf("Failed to update ConfigMap %s in namespace %s with key %s due to %v", cm.Name, ns, updateKey, err)
 			}
 		}
 	}
+
 	return nil
-}
-
-// findOAuthAuthorizeURL uses this endpoint: https://github.com/openshift/origin/pull/10845
-func findOAuthAuthorizeURL() string {
-	url := "https://openshift.default.svc/.well-known/oauth-authorization-server"
-	// test data
-	//url := "https://gist.githubusercontent.com/jstrachan/dbb2066d89810ef1fa53c1df118ccb41/raw/e60a2d42e11930eef13a4264d35514ffd365c8af/dummy.json"
-	r, err := http.Get(url)
-	if err != nil {
-		glog.Warningf("Failed to load url %s got: %v", url, err)
-		return ""
-	}
-	defer r.Body.Close()
-
-	var target OAuthServer
-	err = json.NewDecoder(r.Body).Decode(&target)
-	if err != nil {
-		glog.Warningf("Failed to decode JSON from %s got: %v", url, err)
-		return ""
-	}
-	return target.AuthorizationEndpoint
 }
 
 type OAuthServer struct {
@@ -718,45 +585,11 @@ type OAuthServer struct {
 	TokenEndpoint         string `json:"token_endpoint,omitempty"`
 }
 
-func updateServiceOAuthClient(oc *oclientset.Clientset, svc *v1.Service) {
-	name := svc.Name
-	exposeURL := svc.Annotations[exposestrategy.ExposeAnnotationKey]
-	if len(exposeURL) > 0 {
-		oauthClient, err := oc.OAuthClients().Get(name)
-		if err == nil {
-			redirects := oauthClient.RedirectURIs
-			found := false
-			for _, uri := range redirects {
-				if uri == exposeURL {
-					found = true
-					break
-				}
-			}
-			if !found {
-				oauthClient.RedirectURIs = append(redirects, exposeURL)
-				glog.Infof("Deleting OAuthClient %s", name)
-				err = oc.OAuthClients().Delete(name)
-				if err != nil {
-					glog.Errorf("Failed to delete OAuthClient %s error: %v", name, err)
-					return
-				}
-				oauthClient.ResourceVersion = ""
-				glog.Infof("Creating OAuthClient %s with redirectURIs %v", name, oauthClient.RedirectURIs)
-				_, err = oc.OAuthClients().Create(oauthClient)
-				if err != nil {
-					glog.Errorf("Failed to delete OAuthClient %s error: %v", name, err)
-					return
-				}
-			}
-		}
-	}
-}
-
 // Run starts the controller.
 func (c *Controller) Run() {
 	glog.Infof("starting expose controller")
 
-	go c.svcController.Run(c.stopCh)
+	go c.svcInformer.Run(c.stopCh)
 
 	<-c.stopCh
 }
@@ -768,17 +601,5 @@ func (c *Controller) Stop() {
 }
 
 func (c *Controller) Hasrun() bool {
-	return c.svcController.HasSynced()
-}
-
-func serviceListFunc(c *clientset.Clientset, ns string) func(metav1.ListOptions) (runtime.Object, error) {
-	return func(opts metav1.ListOptions) (runtime.Object, error) {
-		return c.Services(ns).List(opts)
-	}
-}
-
-func serviceWatchFunc(c *clientset.Clientset, ns string) func(options metav1.ListOptions) (watch.Interface, error) {
-	return func(options metav1.ListOptions) (watch.Interface, error) {
-		return c.Services(ns).Watch(options)
-	}
+	return cache.WaitForCacheSync(c.stopCh, c.svcInformer.HasSynced)
 }

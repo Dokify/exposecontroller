@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"github.com/golang/glog"
 	"github.com/pkg/errors"
 	"sort"
@@ -13,12 +14,13 @@ import (
 	client "k8s.io/client-go/kubernetes"
 )
 
-func rollingUpgradeDeployments(cm *api.ConfigMap, c *client.Client) error {
+func rollingUpgradeDeployments(cm *api.ConfigMap, c *client.Clientset) error {
 	ns := cm.Namespace
 	configMapName := cm.Name
 	configMapVersion := convertConfigMapToToken(cm)
 
-	deployments, err := c.Deployments(ns).List(metav1.ListOptions{})
+	ctx := context.Background()
+	deployments, err := c.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return errors.Wrap(err, "failed to list deployments")
 	}
@@ -39,7 +41,7 @@ func rollingUpgradeDeployments(cm *api.ConfigMap, c *client.Client) error {
 				updateContainers(containers, annotationValue, configMapVersion)
 
 				// update the deployment
-				_, err := c.Deployments(ns).Update(&d)
+				_, err := c.AppsV1().Deployments(ns).Update(ctx, &d, metav1.UpdateOptions{})
 				if err != nil {
 					return errors.Wrap(err, "update deployment failed")
 				}

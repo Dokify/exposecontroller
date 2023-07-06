@@ -2,8 +2,10 @@ package exposestrategy
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"gopkg.in/yaml.v2"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"strconv"
 	"strings"
 
@@ -177,7 +179,7 @@ func (s *AmbassadorStrategy) Add(svc *v1.Service) error {
 
 	svc.Annotations["getambassador.io/config"] = joinedAnnotations.String()
 
-	_, err = s.client.Services(svc.Namespace).Update(svc)
+	_, err = s.client.CoreV1().Services(svc.Namespace).Update(context.Background(), svc, metav1.UpdateOptions{})
 	if err != nil {
 		return errors.Wrapf(err, "failed to patch the service %s/%s", svc.Namespace, appName)
 	}
@@ -187,7 +189,7 @@ func (s *AmbassadorStrategy) Add(svc *v1.Service) error {
 func (s *AmbassadorStrategy) Remove(svc *v1.Service) error {
 	delete(svc.Annotations, "getambassador.io/config")
 
-	_, err := s.client.Services(svc.Namespace).Update(svc)
+	_, err := s.client.CoreV1().Services(svc.Namespace).Update(context.Background(), svc, metav1.UpdateOptions{})
 	if err != nil {
 		return errors.Wrapf(err, "failed to patch the service %s/%s", svc.Namespace, svc.GetName())
 	}

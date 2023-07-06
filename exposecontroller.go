@@ -1,8 +1,15 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/clientcmd"
 	"net/http"
 	"net/http/pprof"
 	"os"
@@ -13,12 +20,7 @@ import (
 
 	"github.com/golang/glog"
 	"github.com/jenkins-x/exposecontroller/controller"
-	"github.com/jenkins-x/exposecontroller/version"
 	"github.com/spf13/pflag"
-	api "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 const (
@@ -53,52 +55,31 @@ var (
 )
 
 func main() {
-	kubeConfigFlags := genericclioptions.NewConfigFlags(true)
-	matchVersionKubeConfigFlags := clientcmd.NewDefaultPathOptions()
+	ctx := context.Background()
+	configFlags := genericclioptions.NewConfigFlags(true)
+	configFlags.AddFlags(flags)
 
-	// Asegúrate de que las funciones "ToFile` y "ToRawKubeConfigLoader" obtengan los valores esperados.
-
-	// Convierte los flags a las opciones de Config.
-	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		kubeConfigFlags.ToRawKubeConfigLoader(),
-		&clientcmd.ConfigOverrides{
-			CurrentContext: contextStringVariable,
-			ClusterInfo:    clientcmdapi.Cluster{Server: ""},
-		},
+	kubeconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		clientcmd.NewDefaultClientConfigLoadingRules(),
+		&clientcmd.ConfigOverrides{},
 	)
 
-	factory := genericclioptions.NewConfigFlags(true)
-	factory.BindFlags(flags)
-	factory.BindExternalFlags(flags)
-	flags.Parse(os.Args)
-	flag.CommandLine.Parse([]string{})
-
-	glog.Infof("Using build: %v", version.Version)
-
-	kubeClient, err := factory.Client()
-	for i := 0; i < 30; i++ {
-		if err != nil {
-			glog.Warningf("failed to create client, retrying: %s", err)
-			time.Sleep(1 * time.Second)
-			kubeClient, err = factory.Client()
-		} else {
-			break
-		}
-	}
+	restClientConfig, err := kubeconfig.ClientConfig()
 	if err != nil {
-		glog.Fatalf("failed to create client: %s", err)
+		glog.Fatalf("failed to get Kubernetes client config: %v", err)
 	}
+
+	kubeClient, err := kubernetes.NewForConfig(restClientConfig)
+	if err != nil {
+		glog.Fatalf("failed to create Kubernetes clientset: %v", err)
+	}
+
 	currentNamespace := os.Getenv("KUBERNETES_NAMESPACE")
 	if len(currentNamespace) == 0 {
-		currentNamespace, _, err = factory.DefaultNamespace()
+		currentNamespace, _, err = configFlags.ToRawKubeConfigLoader().Namespace()
 		if err != nil {
 			glog.Fatalf("Could not find the current namespace: %v", err)
 		}
-	}
-
-	restClientConfig, err := factory.ClientConfig()
-	if err != nil {
-		glog.Fatalf("failed to create REST client config: %s", err)
 	}
 
 	controllerConfig, exists, err := controller.LoadFile(*configFile)
@@ -110,7 +91,7 @@ func main() {
 		cc2 := tryFindConfig(kubeClient, currentNamespace)
 		if cc2 == nil {
 			// lets try find the ConfigMap in the dev namespace
-			resource, err := kubeClient.Namespaces().Get(currentNamespace)
+			resource, err := kubeClient.CoreV1().Namespaces().Get(ctx, currentNamespace, metav1.GetOptions{})
 			if err == nil && resource != nil {
 				labels := resource.Labels
 				if labels != nil {
@@ -184,7 +165,7 @@ func main() {
 	}
 
 	if *cleanup {
-		ingress, err := kubeClient.Ingress(watchNamespaces).List(api.ListOptions{})
+		ingress, err := kubeClient.NetworkingV1().Ingresses(watchNamespaces).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			glog.Fatalf("Could not get ingress rules in namespace %s %v", watchNamespaces, err)
 		}
@@ -193,7 +174,7 @@ func main() {
 			if i.Annotations["fabric8.io/generated-by"] == "exposecontroller" {
 				if filter == nil || strings.Contains(i.Name, *filter) {
 					glog.Infof("Deleting ingress %s", i.Name)
-					err := kubeClient.Ingress(watchNamespaces).Delete(i.Name, nil)
+					err := kubeClient.NetworkingV1().Ingresses(watchNamespaces).Delete(ctx, i.Name, metav1.DeleteOptions{})
 					if err != nil {
 						glog.Fatalf("Could not find the current namespace: %v", err)
 					}
@@ -206,7 +187,7 @@ func main() {
 	if *daemon {
 		glog.Infof("Watching services in namespaces: `%s`", watchNamespaces)
 
-		c, err := controller.NewController(kubeClient, restClientConfig, factory.JSONEncoder(), *resyncPeriod, watchNamespaces, controllerConfig)
+		c, err := controller.NewController(kubeClient, restClientConfig, serializer.NewCodecFactory(scheme.Scheme).LegacyCodec(scheme.Scheme.PrioritizedVersionsAllGroups()...), *resyncPeriod, watchNamespaces, controllerConfig)
 		if err != nil {
 			glog.Fatalf("%s", err)
 		}
@@ -217,7 +198,7 @@ func main() {
 		c.Run()
 	} else {
 		glog.Infof("Running in : `%s`", watchNamespaces)
-		c, err := controller.NewController(kubeClient, restClientConfig, factory.JSONEncoder(), *resyncPeriod, watchNamespaces, controllerConfig)
+		c, err := controller.NewController(kubeClient, restClientConfig, serializer.NewCodecFactory(scheme.Scheme).LegacyCodec(scheme.Scheme.PrioritizedVersionsAllGroups()...), *resyncPeriod, watchNamespaces, controllerConfig)
 		if err != nil {
 			glog.Fatalf("%s", err)
 		}
@@ -247,10 +228,10 @@ func main() {
 
 func tryFindConfig(kubeClient *kubernetes.Clientset, ns string) *controller.Config {
 	var controllerConfig *controller.Config
-	cm, err := kubeClient.ConfigMaps(ns).Get("exposecontroller")
+	ctx := context.Background()
+	cm, err := kubeClient.CoreV1().ConfigMaps(ns).Get(ctx, "exposecontroller", metav1.GetOptions{})
 	if err == nil {
 		glog.Infof("Using ConfigMap exposecontroller to load configuration...")
-		// TODO we could allow the config to be passed in via key/value pairs?
 		text := cm.Data["config.yml"]
 		if text != "" {
 			controllerConfig, err = controller.Load(text)
@@ -262,7 +243,7 @@ func tryFindConfig(kubeClient *kubernetes.Clientset, ns string) *controller.Conf
 	} else {
 		glog.Warningf("Could not find ConfigMap exposecontroller ConfigMap in namespace %s", ns)
 
-		cm, err = kubeClient.ConfigMaps(ns).Get("ingress-config")
+		cm, err = kubeClient.CoreV1().ConfigMaps(ns).Get(ctx, "ingress-config", metav1.GetOptions{})
 		if err != nil {
 			glog.Warningf("Could not find ConfigMap ingress-config ConfigMap in namespace %s", ns)
 		} else {
