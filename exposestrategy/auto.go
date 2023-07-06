@@ -1,6 +1,7 @@
 package exposestrategy
 
 import (
+	"context"
 	"strings"
 
 	"github.com/golang/glog"
@@ -23,7 +24,7 @@ const (
 	stackpointIPEnvVar = "BALANCER_IP"
 )
 
-func NewAutoStrategy(exposer, domain, internalDomain, urltemplate string, nodeIP, routeHost, pathMode string, routeUsePath, http, tlsAcme bool, tlsSecretName string, tlsUseWildcard bool, ingressClass string, client *client.Client, restClientConfig *restclient.Config, encoder runtime.Encoder) (ExposeStrategy, error) {
+func NewAutoStrategy(exposer, domain, internalDomain, urltemplate string, nodeIP, routeHost, pathMode string, routeUsePath, http, tlsAcme bool, tlsSecretName string, tlsUseWildcard bool, ingressClass string, client *client.Clientset, restClientConfig *restclient.Config, encoder runtime.Encoder) (ExposeStrategy, error) {
 
 	exposer, err := getAutoDefaultExposeRule(client)
 	if err != nil {
@@ -43,7 +44,7 @@ func NewAutoStrategy(exposer, domain, internalDomain, urltemplate string, nodeIP
 	return New(exposer, domain, internalDomain, urltemplate, nodeIP, routeHost, pathMode, routeUsePath, http, tlsAcme, tlsSecretName, tlsUseWildcard, ingressClass, client, restClientConfig, encoder)
 }
 
-func getAutoDefaultExposeRule(c *client.Client) (string, error) {
+func getAutoDefaultExposeRule(c *client.Clientset) (string, error) {
 	t, err := typeOfMaster(c)
 	if err != nil {
 		return "", errors.Wrap(err, "failed to get type of master")
@@ -54,7 +55,7 @@ func getAutoDefaultExposeRule(c *client.Client) (string, error) {
 
 	// lets default to Ingress on kubernetes for now
 	/*
-		nodes, err := c.Nodes().List(metav1.ListOption{})
+		nodes, err := c.CoreV1().Nodes().List(metav1.ListOption{})
 		if err != nil {
 			return "", errors.Wrap(err, "failed to find any nodes")
 		}
@@ -68,8 +69,9 @@ func getAutoDefaultExposeRule(c *client.Client) (string, error) {
 	return ingress, nil
 }
 
-func getAutoDefaultDomain(c *client.Client) (string, error) {
-	nodes, err := c.Nodes().List(metav1.ListOption{})
+func getAutoDefaultDomain(c *client.Clientset) (string, error) {
+	ctx := context.Background()
+	nodes, err := c.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return "", errors.Wrap(err, "failed to find any nodes")
 	}
@@ -87,8 +89,19 @@ func getAutoDefaultDomain(c *client.Client) (string, error) {
 	}
 
 	// check for a gofabric8 ingress labelled node
-	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{"fabric8.io/externalIP": "true"}})
-	nodes, err = c.Nodes().List(metav1.ListOption{LabelSelector: selector})
+	//selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{"fabric8.io/externalIP": "true"}})
+	/*selector, err := metav1.ParseToLabelSelector("fabric8.io/externalIP=true")
+	if err != nil {
+		log.Fatalf("Error parsing selector: %v", err)
+	}
+
+	selectorAsSelector, err := metav1.LabelSelectorAsSelector(selector)
+	if err != nil {
+		log.Fatalf("Error building selector: %v", err)
+	}*/
+
+	selector := "fabric8.io/externalIP=true"
+	nodes, err = c.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if len(nodes.Items) == 1 {
 		node := nodes.Items[0]
 		ip, err := getExternalIP(node)
@@ -99,7 +112,7 @@ func getAutoDefaultDomain(c *client.Client) (string, error) {
 	}
 
 	// look for a stackpoint HA proxy
-	pod, _ := c.Pods(stackpointNS).Get(stackpointHAProxy)
+	pod, _ := c.CoreV1().Pods(stackpointNS).Get(ctx, stackpointHAProxy, metav1.GetOptions{})
 	if pod != nil {
 		containers := pod.Spec.Containers
 		for _, container := range containers {
@@ -130,9 +143,6 @@ func getExternalIP(node api.Node) (string, error) {
 		addr := &node.Status.Addresses[ix]
 		if addr.Type == api.NodeExternalIP {
 			return addr.Address, nil
-		}
-		if fallback == "" && addr.Type == api.NodeLegacyHostIP {
-			fallback = addr.Address
 		}
 		if fallback == "" && addr.Type == api.NodeInternalIP {
 			fallback = addr.Address

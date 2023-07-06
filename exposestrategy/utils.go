@@ -2,21 +2,20 @@ package exposestrategy
 
 import (
 	"bytes"
-	"encoding/json"
 	"net"
 	"strings"
 	"text/template"
 
 	"github.com/pkg/errors"
 
-	unversioned "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 
+	"k8s.io/api/core/v1"
 	client "k8s.io/client-go/kubernetes"
 )
 
-func findHttpProtocol(svc *api.Service, hostName string) string {
+func findHttpProtocol(svc *v1.Service, hostName string) string {
 	// default to http
 	protocol := "http"
 
@@ -36,12 +35,12 @@ func findHttpProtocol(svc *api.Service, hostName string) string {
 	return protocol
 }
 
-func addServiceAnnotation(svc *api.Service, hostName string) (*api.Service, error) {
+func addServiceAnnotation(svc *v1.Service, hostName string) (*v1.Service, error) {
 	protocol := findHttpProtocol(svc, hostName)
 	return addServiceAnnotationWithProtocol(svc, hostName, protocol)
 }
 
-func addServiceAnnotationWithProtocol(svc *api.Service, hostName string, protocol string) (*api.Service, error) {
+func addServiceAnnotationWithProtocol(svc *v1.Service, hostName string, protocol string) (*v1.Service, error) {
 	if svc.Annotations == nil {
 		svc.Annotations = map[string]string{}
 	}
@@ -65,7 +64,7 @@ func urlJoin(repo string, path string) string {
 	return strings.TrimSuffix(repo, "/") + "/" + strings.TrimPrefix(path, "/")
 }
 
-func removeServiceAnnotation(svc *api.Service) *api.Service {
+func removeServiceAnnotation(svc *v1.Service) *v1.Service {
 	delete(svc.Annotations, ExposeAnnotationKey)
 	if key := svc.Annotations[ExposeHostNameAsAnnotationKey]; len(key) > 0 {
 		delete(svc.Annotations, key)
@@ -109,21 +108,6 @@ const (
 )
 
 func typeOfMaster(c *client.Clientset) (masterType, error) {
-	res, err := c.Get().AbsPath("").DoRaw()
-	if err != nil {
-		errors.Wrap(err, "could not discover the type of your installation")
-	}
-
-	var rp unversioned.RootPaths
-	err = json.Unmarshal(res, &rp)
-	if err != nil {
-		errors.Wrap(err, "could not discover the type of your installation")
-	}
-	for _, p := range rp.Paths {
-		if p == "/oapi" {
-			return openShift, nil
-		}
-	}
 	return kubernetes, nil
 }
 

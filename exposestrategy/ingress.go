@@ -1,22 +1,20 @@
 package exposestrategy
 
 import (
+	"context"
 	"fmt"
-	"reflect"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"strconv"
 	"strings"
 
 	"github.com/golang/glog"
 	"github.com/pkg/errors"
 	"k8s.io/api/core/v1"
-	api "k8s.io/api/core/v1"
 	extensions "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	client "k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/kubernetes/scheme"
 )
 
 const (
@@ -24,7 +22,7 @@ const (
 )
 
 type IngressStrategy struct {
-	client  *client.Client
+	client  *client.Clientset
 	encoder runtime.Encoder
 
 	domain         string
@@ -40,7 +38,7 @@ type IngressStrategy struct {
 
 var _ ExposeStrategy = &IngressStrategy{}
 
-func NewIngressStrategy(client *client.Client, encoder runtime.Encoder, domain string, internalDomain string, http, tlsAcme bool, tlsSecretName string, tlsUseWildcard bool, urltemplate, pathMode string, ingressClass string) (*IngressStrategy, error) {
+func NewIngressStrategy(client *client.Clientset, encoder runtime.Encoder, domain string, internalDomain string, http, tlsAcme bool, tlsSecretName string, tlsUseWildcard bool, urltemplate, pathMode string, ingressClass string) (*IngressStrategy, error) {
 	glog.Infof("NewIngressStrategy 1 %v", http)
 	t, err := typeOfMaster(client)
 	if err != nil {
@@ -121,13 +119,13 @@ func (s *IngressStrategy) Add(svc *v1.Service) error {
 		fullHostName = UrlJoin(hostName, path)
 	}
 
-	ingress, err := s.client.Ingress(svc.Namespace).Get(appName)
+	ingress, err := s.client.NetworkingV1().Ingresses(svc.Namespace).Get(context.Background(), appName, metav1.GetOptions{})
 	createIngress := false
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			createIngress = true
 			ingress = &extensions.Ingress{
-				ObjectMeta: api.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Namespace: svc.Namespace,
 					Name:      appName,
 				},
@@ -155,7 +153,7 @@ func (s *IngressStrategy) Add(svc *v1.Service) error {
 		}
 	}
 	if !hasOwner {
-		ingress.OwnerReferences = append(ingress.OwnerReferences, api.OwnerReference{
+		ingress.OwnerReferences = append(ingress.OwnerReferences, metav1.OwnerReference{
 			APIVersion: "v1",
 			Kind:       "Service",
 			Name:       svc.Name,
@@ -210,7 +208,7 @@ func (s *IngressStrategy) Add(svc *v1.Service) error {
 
 	// check incase we already have this backend path listed
 	for _, backendPath := range backendPaths {
-		if backendPath.Backend.ServiceName == svc.Name && backendPath.Path == path {
+		if backendPath.Backend.Service.Name == svc.Name && backendPath.Path == path {
 			return nil
 		}
 	}
@@ -252,10 +250,15 @@ func (s *IngressStrategy) Add(svc *v1.Service) error {
 	ingressPaths := []extensions.HTTPIngressPath{}
 	ingressPath := extensions.HTTPIngressPath{
 		Backend: extensions.IngressBackend{
-			ServiceName: svc.Name,
-			ServicePort: intstr.FromInt(servicePort),
+			Service: &extensions.IngressServiceBackend{
+				Name: svc.Name,
+				Port: extensions.ServiceBackendPort{
+					Number: int32(servicePort),
+				},
+			},
 		},
-		Path: path,
+		Path:     path,
+		PathType: allpathTypePtr(extensions.PathTypeImplementationSpecific),
 	}
 	ingressPaths = append(ingressPaths, ingressPath)
 	ingressPaths = append(ingressPaths, backendPaths...)
@@ -281,25 +284,18 @@ func (s *IngressStrategy) Add(svc *v1.Service) error {
 	}
 
 	if createIngress {
-		_, err := s.client.Ingress(ingress.Namespace).Create(ingress)
+		_, err := s.client.NetworkingV1().Ingresses(ingress.Namespace).Create(context.Background(), ingress, metav1.CreateOptions{})
 		if err != nil {
 			return errors.Wrapf(err, "failed to create ingress %s/%s", ingress.Namespace, ingress.Name)
 		}
 	} else {
-		_, err := s.client.Ingress(svc.Namespace).Update(ingress)
+		_, err := s.client.NetworkingV1().Ingresses(svc.Namespace).Update(context.Background(), ingress, metav1.UpdateOptions{})
 		if err != nil {
 			return errors.Wrapf(err, "failed to update ingress %s/%s", ingress.Namespace, ingress.Name)
 		}
 	}
 
-	cloned, err := scheme.Scheme.DeepCopy(svc)
-	if err != nil {
-		return errors.Wrap(err, "failed to clone service")
-	}
-	clone, ok := cloned.(*v1.Service)
-	if !ok {
-		return errors.Errorf("cloned to wrong type: %s", reflect.TypeOf(cloned))
-	}
+	clone := svc.DeepCopy()
 
 	if s.isTLSEnabled(svc) {
 		clone, err = addServiceAnnotationWithProtocol(clone, fullHostName, "https")
@@ -315,11 +311,7 @@ func (s *IngressStrategy) Add(svc *v1.Service) error {
 		return errors.Wrap(err, "failed to create patch")
 	}
 	if patch != nil {
-		err = s.client.Patch(strategicpatch.StrategicMergePatchType).
-			Resource("services").
-			Namespace(svc.Namespace).
-			Name(svc.Name).
-			Body(patch).Do().Error()
+		_, err = s.client.CoreV1().Services(svc.Namespace).Patch(context.Background(), svc.Name, types.StrategicMergePatchType, patch, metav1.PatchOptions{})
 		if err != nil {
 			return errors.Wrap(err, "failed to send patch")
 		}
@@ -335,19 +327,12 @@ func (s *IngressStrategy) Remove(svc *v1.Service) error {
 	} else {
 		appName = svc.Name
 	}
-	err := s.client.Ingress(svc.Namespace).Delete(appName, nil)
+	err := s.client.NetworkingV1().Ingresses(svc.Namespace).Delete(context.Background(), appName, metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
 		return errors.Wrap(err, "failed to delete ingress")
 	}
 
-	cloned, err := scheme.Scheme.DeepCopy(svc)
-	if err != nil {
-		return errors.Wrap(err, "failed to clone service")
-	}
-	clone, ok := cloned.(*v1.Service)
-	if !ok {
-		return errors.Errorf("cloned to wrong type: %s", reflect.TypeOf(cloned))
-	}
+	clone := svc.DeepCopy()
 
 	clone = removeServiceAnnotation(clone)
 
@@ -356,11 +341,7 @@ func (s *IngressStrategy) Remove(svc *v1.Service) error {
 		return errors.Wrap(err, "failed to create patch")
 	}
 	if patch != nil {
-		err = s.client.Patch(strategicpatch.StrategicMergePatchType).
-			Resource("services").
-			Namespace(clone.Namespace).
-			Name(clone.Name).
-			Body(patch).Do().Error()
+		_, err = s.client.CoreV1().Services(clone.Namespace).Patch(context.Background(), clone.Name, types.StrategicMergePatchType, patch, metav1.PatchOptions{})
 		if err != nil {
 			return errors.Wrap(err, "failed to send patch")
 		}
@@ -379,4 +360,8 @@ func (s *IngressStrategy) isTLSEnabled(svc *v1.Service) bool {
 	}
 
 	return false
+}
+
+func allpathTypePtr(pt extensions.PathType) *extensions.PathType {
+	return &pt
 }
