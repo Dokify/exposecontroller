@@ -82,7 +82,7 @@ func NewController(
 		}),
 	}
 
-	informerFactory := informers.NewSharedInformerFactory(kubeClient, resyncPeriod)
+	informerFactory := informers.NewSharedInformerFactoryWithOptions(kubeClient, resyncPeriod, informers.WithNamespace(namespace))
 	c.svcInformer = informerFactory.Core().V1().Services().Informer()
 
 	strategy, err := exposestrategy.New(config.Exposer, config.Domain, config.InternalDomain, config.UrlTemplate, config.NodeIP, config.RouteHost, config.PathMode, config.RouteUsePath, config.HTTP, config.TLSAcme, config.TLSSecretName, config.TLSUseWildcard, config.IngressClass, kubeClient, restClientConfig, encoder)
